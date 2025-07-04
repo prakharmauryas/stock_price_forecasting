@@ -1,0 +1,12 @@
+### ✅ `requirements.txt`
+
+```txt
+streamlit
+tensorflow
+pandas
+numpy
+scikit-learn
+matplotlib
+joblib
+yfinance
+````
