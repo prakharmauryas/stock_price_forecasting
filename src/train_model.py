@@ -1,49 +1,64 @@
 import numpy as np
-import os
-import joblib
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from tensorflow.keras.callbacks import EarlyStopping
-from src.feature_engineering import load_and_preprocess
+from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
+import os
+import joblib
+
+LOOKBACK = 200
+DATA_PATH = "data/raw/AAPL.csv"
+MODEL_PATH = "models/lstm_model.h5"
+SCALER_PATH = "models/scaler.save"
+
+def load_data(path):
+    df = pd.read_csv(path)
+    df = df[~df.astype(str).apply(lambda row: row.str.contains('AAPL')).any(axis=1)]
+    df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+    df = df.dropna(subset=['Close'])
+
+    return df[['Close']].values
+
+def create_sequences(data, lookback):
+    X, y = [], []
+    for i in range(lookback, len(data)):
+        X.append(data[i - lookback:i])
+        y.append(data[i])
+    return np.array(X), np.array(y)
 
 print("✅ Starting LSTM training...")
 
-# Load preprocessed data
-X, y, scaler = load_and_preprocess("data/raw/AAPL.csv", lookback=60)
-print(f"✅ Loaded and preprocessed data. Total samples: {len(X)}")
+# Load and scale data
+raw_close = load_data(DATA_PATH)
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(raw_close)
 
-# Reshape X to 3D shape [samples, time_steps, features]
+# Create sequences
+X, y = create_sequences(scaled_data, LOOKBACK)
 X = X.reshape((X.shape[0], X.shape[1], 1))
-print(f"✅ Reshaped X to: {X.shape}")
 
-# Train-test split (80/20)
+# Split
 split = int(0.8 * len(X))
 X_train, X_test = X[:split], X[split:]
 y_train, y_test = y[:split], y[split:]
-print(f"✅ Training samples: {len(X_train)}, Testing samples: {len(X_test)}")
 
-# Build LSTM model
+# Model
 model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
+    LSTM(50, return_sequences=True, input_shape=(LOOKBACK, 1)),
     LSTM(50),
     Dense(1)
 ])
-print("✅ Model architecture built.")
 
-model.compile(optimizer='adam', loss='mean_squared_error')
-print("✅ Model compiled.")
+model.compile(optimizer="adam", loss="mean_squared_error")
+early_stop = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
 
-# Set up early stopping
-early_stop = EarlyStopping(monitor='loss', patience=3)
+# Train
+model.fit(X_train, y_train, validation_split=0.1, epochs=10, batch_size=32, callbacks=[early_stop], verbose=1)
 
-# Train the model
-print("🚀 Starting training...")
-model.fit(X_train, y_train, epochs=10, batch_size=32, callbacks=[early_stop], verbose=1)
-
-# Save model and scaler
+# Save
 os.makedirs("models", exist_ok=True)
-model.save("models/lstm_model.h5")
-joblib.dump(scaler, "models/scaler.save")
-print("✅ Model saved to models/lstm_model.h5")
-print("✅ Scaler saved to models/scaler.save")
-print("🎉 LSTM model training complete!")
+model.save(MODEL_PATH)
+joblib.dump(scaler, SCALER_PATH)
+
+print("✅ Model trained and saved.")

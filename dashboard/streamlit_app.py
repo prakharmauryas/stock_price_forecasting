@@ -1,70 +1,74 @@
+import sys
+import os
 import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-from tensorflow.keras.models import load_model
 import matplotlib.pyplot as plt
 
-LOOKBACK = 60
-MODEL_PATH = "models/lstm_model.h5"
-SCALER_PATH = "models/scaler.save"
-DATA_PATH = "data/raw/AAPL.csv"
+# Allow importing from the src/ folder
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Load model and scaler
+from src.api import (
+    load_model_and_scaler,
+    clean_and_prepare_input,
+    predict_multi_day
+)
+from src.data_loader import fetch_data
+
+LOOKBACK = 200  # Days of past data to look at
+
+# Streamlit config
+st.set_page_config(page_title="Stock Price Forecast", layout="centered")
+st.title("📈 Stock Price Forecaster (LSTM)")
+st.write("Forecast the next **N closing prices** using an LSTM model trained on historical stock data.")
+
+# Load model & scaler (cached)
 @st.cache_resource
 def load_resources():
-    model = load_model(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
-    return model, scaler
-
-# Prepare input sequence
-def prepare_input(path, lookback, scaler):
-    df = pd.read_csv(path)
-    df = df[~df.astype(str).apply(lambda row: row.str.contains('AAPL')).any(axis=1)]
-    df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-    df = df.dropna(subset=['Close'])
-
-    close_prices = df['Close'].values.reshape(-1, 1)
-    scaled = scaler.transform(close_prices)
-
-    if len(scaled) < lookback:
-        raise ValueError("Not enough data for prediction.")
-
-    input_seq = scaled[-lookback:].reshape(1, lookback, 1)
-    return df, input_seq
-
-# Streamlit UI
-st.title("📈 Stock Price Forecaster (LSTM)")
-st.write("This app uses an LSTM model to forecast the next closing price for Apple (AAPL).")
+    return load_model_and_scaler()
 
 model, scaler = load_resources()
 
-# Load data & prepare
-df, X_input = prepare_input(DATA_PATH, LOOKBACK, scaler)
+# Select stock ticker
+ticker = st.selectbox("📊 Choose Stock Ticker", ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA"])
 
-# Predict
-pred_scaled = model.predict(X_input)
-predicted_price = scaler.inverse_transform(pred_scaled)[0][0]
+# Forecast range (1 to 30 days)
+N_DAYS = st.slider("📅 Select number of days to forecast", min_value=1, max_value=30, value=7)
 
-# Display latest data
-st.subheader("🔍 Recent 60 Days")
-st.line_chart(df['Close'].tail(LOOKBACK))
+# Cache and fetch historical data
+@st.cache_data
+def get_data(ticker):
+    return fetch_data(ticker=ticker, save=True)
 
-# Show prediction
-st.subheader("🔮 Predicted Next Closing Price")
-st.success(f"${predicted_price:.2f}")
+get_data(ticker)
 
-# Show full chart with prediction
-st.subheader("📊 Forecast Visualization")
+# Prepare input
+try:
+    df, X_input = clean_and_prepare_input(scaler=scaler, ticker=ticker, lookback=LOOKBACK)
 
-extended_close = df['Close'].tail(LOOKBACK).tolist()
-extended_close.append(predicted_price)
+    # Run multi-day prediction
+    future_prices = predict_multi_day(model, scaler, X_input[-LOOKBACK:], days=N_DAYS)
 
-plt.figure(figsize=(10, 4))
-plt.plot(range(LOOKBACK), extended_close[:-1], label="Past 60 Days")
-plt.plot(LOOKBACK, predicted_price, 'ro', label="Next Prediction")
-plt.title("Stock Price Forecast")
-plt.xlabel("Days")
-plt.ylabel("Price ($)")
-plt.legend()
-st.pyplot(plt)
+    # 📈 Show past data
+    st.subheader(f"🔍 Recent {LOOKBACK} Days - {ticker}")
+    st.line_chart(df['Close'].tail(LOOKBACK))
+
+    # 🔮 Show future prices
+    st.subheader(f"🔮 Predicted Closing Prices for Next {N_DAYS} Days")
+    for i, price in enumerate(future_prices, 1):
+        st.markdown(f"- Day {i}: **${price:.2f}**")
+
+    # 📊 Plot forecast
+    st.subheader("📊 Forecast Visualization")
+    historical = df['Close'].tail(LOOKBACK).tolist()
+    x_future = list(range(len(historical), len(historical) + N_DAYS))
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(range(len(historical)), historical, label="Historical")
+    plt.plot(x_future, future_prices, 'ro--', label="Forecast")
+    plt.xlabel("Days")
+    plt.ylabel("Price ($)")
+    plt.title(f"{ticker} Stock Price Forecast")
+    plt.legend()
+    st.pyplot(plt)
+
+except Exception as e:
+    st.error(f"🚫 Error occurred: {e}")
